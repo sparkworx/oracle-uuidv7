@@ -129,6 +129,14 @@ Reading the table:
 Also verified: 8 concurrent sessions × 100,000 inserts into one primary-keyed table —
 800,000 distinct keys, no `ORA-00001`, every session's keys in generation order.
 
+## What about 23ai / 26ai?
+
+Newer releases have a native `UUID()` SQL function (plus `RAW_TO_UUID` /
+`UUID_TO_RAW`), but as of 23.26.3 it only produces **version 4**: `UUID(7)` raises
+`ORA-62433`. Random v4 keys scatter inserts across the whole primary key index, so
+this package remains the better key source there too. It installs and passes its
+tests unchanged on 23.26.
+
 ## Why not Java
 
 Not benchmarked, deliberately. An OJVM stored procedure adds a call boundary on
