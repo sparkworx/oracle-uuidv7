@@ -10,6 +10,83 @@ SELECT uuid_v7.to_string(id), uuid_v7.timestamp_of(id) FROM orders;
 -- 01a0b0f8-bbc9-73b2-a37b-eae4a6ce258e   2026-09-17 20:04:46.153 +00:00
 ```
 
+## Why UUIDv7 instead of a sequence
+
+The short version: an Oracle sequence promises *unique numbers*, and nothing else.
+Everything people assume on top of that — ordered, gapless, never reissued,
+meaningful across systems — is an assumption the database does not back, and on RAC
+it stops being even approximately true. UUIDv7 gives you an identifier that is unique
+everywhere, sorts by time, tells you when it was minted, and needs no coordination
+at all.
+
+### The case that prompted this: HL7 `MSH-10` Message Control ID
+
+HL7 v2 asks exactly one thing of `MSH-10`: that it **uniquely identifies the
+message**, so the receiver can echo it in `MSA-2` and the sender can match the ACK.
+It is a string (`ST`), not a number, and the standard says nothing about ordering —
+ordered delivery is what `MSH-13` *Sequence Number* and the sequence number protocol
+exist for. A receiver that enforces "monotonically increasing integer" on `MSH-10`
+is enforcing something that neither HL7 nor Oracle guarantees:
+
+| What the integer-sequence assumption needs | What an Oracle sequence actually does |
+|---|---|
+| Values arrive in increasing order | `NEXTVAL` order is not send order. Two sessions draw 1041 and 1042; 1042 finishes building its message first. Any sender with more than one session violates this, on any database. |
+| Increasing across the cluster | On RAC each instance caches its own range (`NOORDER`, the default): node 1 hands out 1–20 while node 2 hands out 21–40, interleaved in time. |
+| ...so use `ORDER`? | `ORDER` makes every `NEXTVAL` a cluster-wide synchronisation (`enq: SV`, `row cache lock`, `seq$` block pings). You pay global serialisation on every message to prop up a guarantee the first row already lost. |
+| No gaps | Rollbacks, instance crashes, shared pool ageing and cache flushes all burn values. Gapless sequences do not exist. |
+| Never reissued | A point-in-time restore, a flashback, a refreshed clone or a recreated sequence hands out numbers the partner has already seen — silently. |
+| Unique per sender | `48213` from PROD, from TEST, from the DR site and from the facility you merge with next year are the same control ID. |
+
+UUIDv7 replaces those assumptions with properties that actually hold:
+
+* **Globally unique with zero coordination.** No registry, no per-instance ranges,
+  no cluster traffic. RAC node, DR site, test clone, acquired hospital: no
+  collisions, nothing to configure.
+* **Cannot be reissued.** The leading 48 bits are the wall clock. A restored or
+  cloned database keeps minting *new* identifiers, because time has moved on.
+* **Time-ordered where that is physically meaningful.** Strictly increasing within a
+  session; across sessions and RAC instances ordered by clock, to the precision of
+  the cluster's time sync (which Grid Infrastructure already enforces). That is as
+  much ordering as a distributed sender can honestly offer, and it is there for
+  troubleshooting and indexing, not as a wire-protocol contract.
+* **Self-describing.** `uuid_v7.timestamp_of(id)` recovers when the control ID was
+  minted, to the millisecond. Set against `MSH-7` and the ACK time, that is a free
+  latency and forensics trail: *when was this message created, versus when it claims
+  to have been sent, versus when it was acknowledged?*
+* **Drop-in where UUIDs are already accepted.** Same 36-character text, same 16
+  bytes as the v4 UUIDs a partner already takes; only the version digit differs.
+  Hex digits and hyphens never collide with HL7 delimiters (`|^~\&`), so no escaping.
+* **Better than v4 for the sender's own database.** A v4 key lands at a random spot
+  in the message-log index on every insert: the whole index becomes the working set
+  and leaf blocks split 50/50 forever. v7 keys append, like a sequence — compact
+  index, cache-friendly, and recent messages (the ones ACK matching looks up) sit
+  together in a few hot blocks.
+* **Cheaper than the sequence it replaces.** No `seq$` updates, no `enq: SQ` /
+  `enq: SV`, no `row cache lock`, nothing global on RAC (see *Behaviour under high
+  concurrency*), and 2x faster than `NEXTVAL` when called from PL/SQL.
+
+```sql
+-- building the message
+l_id    := uuid_v7.generate;                 -- RAW(16): store and index this
+l_msh10 := uuid_v7.to_string(l_id);          -- '01a0b0f8-bbc9-73b2-a37b-eae4a6ce258e'
+
+-- matching the ACK
+SELECT ... FROM hl7_outbound WHERE id = uuid_v7.from_string(:msa_2);
+```
+
+One thing to check with each trading partner: `MSH-10` is `ST` with a maximum length
+of **20** up to HL7 v2.6 and 199 from v2.7. A UUID is 36 characters (32 without
+hyphens), so an interface that accepts UUIDs today is already past the v2.6 limit by
+agreement — fine, but worth having in the interface specification rather than in
+folklore.
+
+What UUIDv7 deliberately does **not** claim: a global total order across sessions.
+Nothing does, short of funnelling every message through a single serialisation
+point; a sequence only appears to, until the second session or the second RAC node.
+If a partner genuinely needs ordered processing, that is a transport-level concern
+(one connection, `MSH-13`, or an ordered queue), not something to smuggle into an
+identifier.
+
 ## Install
 
 ```
