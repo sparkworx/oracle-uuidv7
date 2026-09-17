@@ -22,7 +22,7 @@ DECLARE
   l_nums t_nums;
   l_raw  RAW(16);
   l_num  NUMBER;
-  l_t0   TIMESTAMP;
+  l_t0   TIMESTAMP WITH TIME ZONE;
 
   PROCEDURE start_timer IS
   BEGIN

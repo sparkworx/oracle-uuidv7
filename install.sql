@@ -1,26 +1,38 @@
 -- Installs the UUID_V7 package into the current schema.
 --
---   sqlplus user/pass@db @install.sql
+--   sqlplus user/pass@db @install.sql [no_crypto] [coarse_clock]
 --
 -- Prerequisite (once, as a privileged user):
 --   GRANT EXECUTE ON SYS.DBMS_CRYPTO TO <schema>;
--- If that grant is not obtainable, install the DBMS_RANDOM-based variant:
---   sqlplus user/pass@db @install.sql no_crypto
+--
+-- Options (any order):
+--   no_crypto     take random bits from DBMS_RANDOM instead of DBMS_CRYPTO, for
+--                 schemas that cannot get the grant above. Not a CSPRNG.
+--   coarse_clock  read SYSTIMESTAMP at most once per 10ms and count up in
+--                 between. ~40% less CPU per UUID; embedded timestamps may lag
+--                 the wall clock by up to 10ms. Ordering guarantees unchanged.
 
 WHENEVER SQLERROR EXIT FAILURE ROLLBACK
 SET VERIFY OFF FEEDBACK ON
 
--- optional first argument, defaulting to "crypto"
+-- make &1 and &2 optional
 COLUMN 1 NEW_VALUE 1 NOPRINT
+COLUMN 2 NEW_VALUE 2 NOPRINT
 SET TERMOUT OFF
-SELECT NULL AS "1" FROM dual WHERE 1 = 0;
+SELECT NULL AS "1", NULL AS "2" FROM dual WHERE 1 = 0;
 SET TERMOUT ON
-COLUMN ccflag NEW_VALUE ccflag NOPRINT
-SELECT CASE LOWER('&1') WHEN 'no_crypto' THEN 'true' ELSE 'false' END AS ccflag FROM dual;
+
+COLUMN ccflags NEW_VALUE ccflags NOPRINT
+SELECT 'uuid_v7_no_crypto:'
+       || CASE WHEN INSTR(LOWER(' &1 &2 '), ' no_crypto ') > 0 THEN 'true' ELSE 'false' END
+       || ',uuid_v7_coarse_clock:'
+       || CASE WHEN INSTR(LOWER(' &1 &2 '), ' coarse_clock ') > 0 THEN 'true' ELSE 'false' END
+       AS ccflags
+  FROM dual;
 
 ALTER SESSION SET plsql_code_type = NATIVE;
 ALTER SESSION SET plsql_optimize_level = 3;
-ALTER SESSION SET plsql_ccflags = 'uuid_v7_no_crypto:&ccflag';
+ALTER SESSION SET plsql_ccflags = '&ccflags';
 
 @@src/uuid_v7.pks
 SHOW ERRORS PACKAGE uuid_v7
@@ -40,4 +52,5 @@ BEGIN
 END;
 /
 
+PROMPT Installed UUID_V7 with &ccflags
 SELECT uuid_v7.to_string(uuid_v7.generate) AS sample_uuid_v7 FROM dual;

@@ -1,26 +1,44 @@
 CREATE OR REPLACE PACKAGE BODY uuid_v7 AS
+  /*
+   * Performance notes (measured, see README): UTL_RAW calls cost 0.3-0.5us each
+   * while native HEXTORAW / SUBSTRB / || cost a few hundredths, so the value is
+   * assembled as a 32-character hex string and converted once. SUBSTRB, not
+   * SUBSTR: in a multi-byte database character set (AL32UTF8) SUBSTR has to
+   * scan the string from the start to find a character offset.
+   */
 
-  c_2p28      CONSTANT NUMBER      := 268435456;
-  c_buf_bytes CONSTANT PLS_INTEGER := 2000;   -- 250 UUIDs of randomness per refill
-  c_epoch     CONSTANT TIMESTAMP   := TIMESTAMP '1970-01-01 00:00:00';
+  c_epoch     CONSTANT TIMESTAMP    := TIMESTAMP '1970-01-01 00:00:00';
+  c_hex       CONSTANT VARCHAR2(16) := '0123456789ABCDEF';
+  c_pool_len  CONSTANT PLS_INTEGER  := 4000;   -- hex chars: 2000 random bytes = 250 UUIDs
 
   -- 60-bit timestamp of the last UUID issued by this session:
   -- floor(unix epoch milliseconds * 4096).
   g_last      NUMBER := 0;
 
-  -- Converting SYSTIMESTAMP to epoch time is the expensive part of a call, so
-  -- the conversion is done once per wall-clock minute. While SYSTIMESTAMP stays
-  -- inside [g_min_lo, g_min_hi) only its SECOND field has to be extracted.
+  -- Converting SYSTIMESTAMP to epoch time is expensive, so it is done once per
+  -- wall-clock minute. While SYSTIMESTAMP stays inside [g_min_lo, g_min_hi)
+  -- only its SECOND field has to be extracted.
   g_min_lo    TIMESTAMP WITH TIME ZONE;
   g_min_hi    TIMESTAMP WITH TIME ZONE;
-  g_min_base  NUMBER;                         -- epoch ms of g_min_lo, * 4096
+  g_min_base  NUMBER;                          -- epoch ms of g_min_lo, * 4096
 
-  -- Pool of random bytes with the variant bits (10xx xxxx) already stamped on
-  -- every 8th byte, consumed 8 bytes per UUID.
-  g_rnd       RAW(2000);
-  g_pos       PLS_INTEGER := c_buf_bytes + 1;
-  g_and_mask  CONSTANT RAW(2000) := UTL_RAW.COPIES(HEXTORAW('3FFFFFFFFFFFFFFF'), c_buf_bytes / 8);
-  g_or_mask   CONSTANT RAW(2000) := UTL_RAW.COPIES(HEXTORAW('8000000000000000'), c_buf_bytes / 8);
+  -- Hex of the 48-bit millisecond field plus the version digit, recomputed
+  -- only when the millisecond changes.
+  g_ms        NUMBER := -1;
+  g_ms_hex    VARCHAR2(13);
+
+  g_byte_hex  VARCHAR2(512);                   -- '000102..FF', 2-digit hex lookup
+
+  -- Pool of random hex with the variant bits (10xx) already stamped on every
+  -- 8th byte, consumed 16 characters per UUID.
+  g_rnd       VARCHAR2(4000);
+  g_pos       PLS_INTEGER := c_pool_len + 1;
+  g_and_mask  CONSTANT RAW(2000) := UTL_RAW.COPIES(HEXTORAW('3FFFFFFFFFFFFFFF'), c_pool_len / 16);
+  g_or_mask   CONSTANT RAW(2000) := UTL_RAW.COPIES(HEXTORAW('8000000000000000'), c_pool_len / 16);
+
+$IF $$uuid_v7_coarse_clock $THEN
+  g_tick      PLS_INTEGER := -1;               -- last DBMS_UTILITY.GET_TIME seen
+$END
 
   PROCEDURE sync_minute(p_now IN TIMESTAMP WITH TIME ZONE) IS
     l_since_epoch INTERVAL DAY(9) TO SECOND(9);
@@ -33,64 +51,80 @@ CREATE OR REPLACE PACKAGE BODY uuid_v7 AS
                       + EXTRACT(MINUTE FROM l_since_epoch)) * 60000 * 4096;
   END sync_minute;
 
-  PROCEDURE refill_random IS
-  BEGIN
-$IF $$uuid_v7_no_crypto $THEN
-    -- Fallback for schemas without EXECUTE on DBMS_CRYPTO. Not a CSPRNG.
-    g_rnd := NULL;
-    FOR i IN 1 .. c_buf_bytes / 4 LOOP
-      g_rnd := UTL_RAW.CONCAT(g_rnd, UTL_RAW.CAST_FROM_BINARY_INTEGER(DBMS_RANDOM.RANDOM));
-    END LOOP;
-    g_rnd := UTL_RAW.BIT_OR(UTL_RAW.BIT_AND(g_rnd, g_and_mask), g_or_mask);
-$ELSE
-    g_rnd := UTL_RAW.BIT_OR(UTL_RAW.BIT_AND(DBMS_CRYPTO.RANDOMBYTES(c_buf_bytes), g_and_mask),
-                            g_or_mask);
-$END
-    g_pos := 1;
-  END refill_random;
-
-  FUNCTION generate RETURN RAW PARALLEL_ENABLE IS
-    l_now  TIMESTAMP WITH TIME ZONE := SYSTIMESTAMP;
-    l_t    NUMBER;
-    l_w1   PLS_INTEGER;   -- bytes 0-3: unix_ts_ms bits 47..16
-    l_w2   PLS_INTEGER;   -- bytes 4-7: unix_ts_ms bits 15..0, version, fraction
-    l_rem  PLS_INTEGER;
-    l_frac PLS_INTEGER;
-    l_lo16 PLS_INTEGER;
-    l_pos  PLS_INTEGER;
+  -- Wall clock as floor(epoch milliseconds * 4096).
+  FUNCTION clock_now RETURN NUMBER IS
+    l_now TIMESTAMP WITH TIME ZONE := SYSTIMESTAMP;
   BEGIN
     IF l_now >= g_min_hi OR l_now < g_min_lo THEN
       sync_minute(l_now);
     END IF;
+    RETURN g_min_base + TRUNC(EXTRACT(SECOND FROM l_now) * 4096000);
+  END clock_now;
 
-    l_t := g_min_base + TRUNC(EXTRACT(SECOND FROM l_now) * 4096000);
+  PROCEDURE refill_random IS
+    l_bytes RAW(2000);
+  BEGIN
+$IF $$uuid_v7_no_crypto $THEN
+    -- Fallback for schemas without EXECUTE on DBMS_CRYPTO. Not a CSPRNG.
+    FOR i IN 1 .. c_pool_len / 8 LOOP
+      l_bytes := UTL_RAW.CONCAT(l_bytes, UTL_RAW.CAST_FROM_BINARY_INTEGER(DBMS_RANDOM.RANDOM));
+    END LOOP;
+$ELSE
+    l_bytes := DBMS_CRYPTO.RANDOMBYTES(c_pool_len / 2);
+$END
+    g_rnd := RAWTOHEX(UTL_RAW.BIT_OR(UTL_RAW.BIT_AND(l_bytes, g_and_mask), g_or_mask));
+    g_pos := 1;
+  END refill_random;
+
+  FUNCTION generate RETURN RAW PARALLEL_ENABLE IS
+    l_t    NUMBER;
+    l_ms   NUMBER;
+    l_frac PLS_INTEGER;
+    l_pos  PLS_INTEGER;
+$IF $$uuid_v7_coarse_clock $THEN
+    l_tick PLS_INTEGER := DBMS_UTILITY.GET_TIME;
+$END
+  BEGIN
+$IF $$uuid_v7_coarse_clock $THEN
+    -- SYSTIMESTAMP is the single most expensive step. In this build it is only
+    -- read when the (cheap) centisecond tick counter has moved; in between,
+    -- values count up from the last one, so embedded times can lag by <= 10ms.
+    IF l_tick = g_tick THEN
+      l_t := 0;
+    ELSE
+      g_tick := l_tick;
+      PRAGMA INLINE (clock_now, 'YES');
+      l_t := clock_now;
+    END IF;
+$ELSE
+    PRAGMA INLINE (clock_now, 'YES');
+    l_t := clock_now;
+$END
 
     -- Same clock reading as last time, or the clock stepped backwards: keep
-    -- counting up from the last value so the session stays monotonic.
+    -- counting up from the last value so the session stays strictly monotonic.
     IF l_t <= g_last THEN
       l_t := g_last + 1;
     END IF;
     g_last := l_t;
 
-    l_w1   := TRUNC(l_t / c_2p28);
-    l_rem  := l_t - l_w1 * c_2p28;
-    l_frac := BITAND(l_rem, 4095);
-    l_lo16 := (l_rem - l_frac) / 4096;
-    -- PLS_INTEGER is signed 32-bit: fold the top bit into the sign
-    IF l_lo16 > 32767 THEN
-      l_lo16 := l_lo16 - 65536;
+    l_ms   := TRUNC(l_t / 4096);
+    l_frac := l_t - l_ms * 4096;
+    IF l_ms != g_ms THEN
+      g_ms     := l_ms;
+      g_ms_hex := TO_CHAR(l_ms, 'FM0XXXXXXXXXXX') || '7';
     END IF;
-    l_w2 := l_lo16 * 65536 + 28672 + l_frac;   -- 28672 = 0x7000, the version nibble
 
-    IF g_pos > c_buf_bytes THEN
+    IF g_pos > c_pool_len THEN
       refill_random;
     END IF;
     l_pos := g_pos;
-    g_pos := g_pos + 8;
+    g_pos := g_pos + 16;
 
-    RETURN UTL_RAW.CONCAT(UTL_RAW.CAST_FROM_BINARY_INTEGER(l_w1, UTL_RAW.BIG_ENDIAN),
-                          UTL_RAW.CAST_FROM_BINARY_INTEGER(l_w2, UTL_RAW.BIG_ENDIAN),
-                          UTL_RAW.SUBSTR(g_rnd, l_pos, 8));
+    RETURN HEXTORAW(   g_ms_hex
+                    || SUBSTRB(c_hex, TRUNC(l_frac / 256) + 1, 1)
+                    || SUBSTRB(g_byte_hex, BITAND(l_frac, 255) * 2 + 1, 2)
+                    || SUBSTRB(g_rnd, l_pos, 16));
   END generate;
 
   FUNCTION to_string(p_uuid IN RAW) RETURN VARCHAR2 DETERMINISTIC PARALLEL_ENABLE IS
@@ -136,5 +170,8 @@ $END
 
 BEGIN
   sync_minute(SYSTIMESTAMP);
+  FOR i IN 0 .. 255 LOOP
+    g_byte_hex := g_byte_hex || TO_CHAR(i, 'FM0X');
+  END LOOP;
 END uuid_v7;
 /

@@ -19,6 +19,7 @@ DECLARE
   l_after   TIMESTAMP WITH TIME ZONE;
   l_ts      TIMESTAMP WITH TIME ZONE;
   l_text    VARCHAR2(36);
+  l_slack   NUMBER;
 
   PROCEDURE ok(p_cond IN BOOLEAN, p_what IN VARCHAR2) IS
   BEGIN
@@ -41,11 +42,16 @@ BEGIN
   END LOOP;
   DBMS_OUTPUT.PUT_LINE('ok   layout + monotonic over ' || c_n || ' values');
 
-  -- embedded timestamp brackets the wall clock (ms truncation => allow 1ms slack)
+  -- embedded timestamp brackets the wall clock. Slack: 1ms for truncation to
+  -- milliseconds, 25ms if the package was installed with coarse_clock.
+  SELECT CASE WHEN plsql_ccflags LIKE '%uuid_v7_coarse_clock:true%' THEN 0.025 ELSE 0.001 END
+    INTO l_slack
+    FROM user_plsql_object_settings
+   WHERE name = 'UUID_V7' AND type = 'PACKAGE BODY';
   l_before := SYSTIMESTAMP;
   l_ts     := uuid_v7.timestamp_of(uuid_v7.generate);
   l_after  := SYSTIMESTAMP;
-  ok(l_ts >= l_before - INTERVAL '0.001' SECOND AND l_ts <= l_after,
+  ok(l_ts >= l_before - NUMTODSINTERVAL(l_slack, 'SECOND') AND l_ts <= l_after,
      'timestamp_of within call window: ' || TO_CHAR(l_before, 'HH24:MI:SS.FF6') || ' <= '
      || TO_CHAR(l_ts, 'HH24:MI:SS.FF6 TZR') || ' <= ' || TO_CHAR(l_after, 'HH24:MI:SS.FF6'));
   DBMS_OUTPUT.PUT_LINE('ok   embedded timestamp matches SYSTIMESTAMP');
