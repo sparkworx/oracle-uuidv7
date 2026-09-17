@@ -39,15 +39,33 @@ SHOW ERRORS PACKAGE uuid_v7
 @@src/uuid_v7.pkb
 SHOW ERRORS PACKAGE BODY uuid_v7
 
--- fail the install if either unit did not compile
+-- Native compilation can fail for reasons that have nothing to do with the
+-- code, e.g. ORA-00600 [pesldl03_MMap] when /dev/shm is mounted noexec (Docker
+-- default, hardened hosts). Retry interpreted before giving up; most of the
+-- run time is inside C built-ins either way.
+SET SERVEROUTPUT ON
 DECLARE
-  l_invalid PLS_INTEGER;
+  FUNCTION invalid_units RETURN PLS_INTEGER IS
+    l_invalid PLS_INTEGER;
+  BEGIN
+    SELECT COUNT(*) INTO l_invalid
+      FROM user_objects
+     WHERE object_name = 'UUID_V7' AND status != 'VALID';
+    RETURN l_invalid;
+  END;
 BEGIN
-  SELECT COUNT(*) INTO l_invalid
-    FROM user_objects
-   WHERE object_name = 'UUID_V7' AND status != 'VALID';
-  IF l_invalid > 0 THEN
-    RAISE_APPLICATION_ERROR(-20000, 'UUID_V7 did not compile - see errors above');
+  IF invalid_units > 0 THEN
+    BEGIN
+      EXECUTE IMMEDIATE
+        'ALTER PACKAGE uuid_v7 COMPILE PLSQL_CODE_TYPE = INTERPRETED REUSE SETTINGS';
+    EXCEPTION
+      WHEN OTHERS THEN NULL;   -- compile errors surface through invalid_units below
+    END;
+    IF invalid_units > 0 THEN
+      RAISE_APPLICATION_ERROR(-20000, 'UUID_V7 did not compile - see errors above');
+    END IF;
+    DBMS_OUTPUT.PUT_LINE('NOTE: native compilation failed on this host (see above); '
+                         || 'UUID_V7 was compiled INTERPRETED instead.');
   END IF;
 END;
 /

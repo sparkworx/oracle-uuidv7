@@ -29,9 +29,10 @@ Install options, in any order: `@install.sql [no_crypto] [coarse_clock]`
 * `coarse_clock` — ~40% less CPU per UUID in exchange for embedded timestamps that
   may lag by up to 10 ms; see *Why it is fast*. Recommended for bulk-insert keys.
 
-The install compiles the package natively at `PLSQL_OPTIMIZE_LEVEL = 3`. (On
-platforms without native compilation, e.g. Linux ARM, you get a harmless
-`PLS-00924` warning and interpreted code.) To let other
+The install compiles the package natively at `PLSQL_OPTIMIZE_LEVEL = 3`. Where
+native compilation is unavailable the install falls back to interpreted code by
+itself: Linux ARM ports (`PLS-00924` warning) and hosts whose `/dev/shm` is mounted
+`noexec`, e.g. Docker defaults (`ORA-00600 [pesldl03_MMap]`). To let other
 schemas use it: `GRANT EXECUTE ON uuid_v7 TO ...` plus a synonym.
 
 ## API
@@ -129,13 +130,56 @@ Reading the table:
 Also verified: 8 concurrent sessions × 100,000 inserts into one primary-keyed table —
 800,000 distinct keys, no `ORA-00001`, every session's keys in generation order.
 
+## Behaviour under high concurrency
+
+`generate` touches **no shared structure** per call: no SQL, no sequence, no latch,
+no enqueue, no row cache. All state (last timestamp, random pool, ~8 KB) lives in the
+session's own memory. The default and `coarse_clock` builds are identical in this
+respect — the clock choice is a pure CPU trade-off (~1 µs per UUID) and cannot create
+or remove contention.
+
+Library cache behaviour, measured via `v$librarycache` pin deltas:
+
+| calling pattern | package pins |
+|---|---|
+| 100,000 `generate` calls in one PL/SQL block | 0 |
+| one `INSERT ... SELECT` of 100,000 rows | ~0 (noise) |
+| 100,000 `INSERT ... VALUES (uuid_v7.generate, ...)` inside one PL/SQL call | ~0; the only per-execution pin is on the cursor, same as `SYS_GUID()` |
+| INSERTs issued one by one from a client | ~5 shared-mode pins per top-level call (spec, body, dependencies) |
+
+So the package is pinned (shared) once per *top-level call*, never per UUID. Shared
+pins do not block each other; each is a sub-microsecond mutex operation. That only
+becomes visible (`library cache: mutex X`) at tens of thousands of top-level calls
+per second against one object on a large SMP box — if you ever get there,
+`DBMS_SHARED_POOL.MARKHOT` on the package spreads it — and long before that the usual
+suspects dominate: the INSERT cursor's own mutex (`cursor: pin S`), redo, and above
+all the **right-hand index leaf block** (`buffer busy waits`, `enq: TX - index
+contention`, `gc buffer busy` on RAC), which any ascending key shares with
+sequences. A global hash-partitioned primary key index is the standard remedy.
+Relative to a sequence, this generator *removes* contention points: no `seq$`
+updates, `row cache lock` or `enq: SQ/SV` waits, and nothing to coordinate in RAC.
+
+The one real library cache hazard is **DDL against the package while it is busy**.
+`CREATE OR REPLACE`/`ALTER ... COMPILE` needs an exclusive pin: it waits for every
+in-flight top-level call using the package (`library cache pin`), new callers queue
+behind it, and afterwards every session holding package state takes one `ORA-04068`.
+Deploy in a quiet window (or via edition-based redefinition) and never recompile it
+casually under load.
+
+Host-level: `SYSTIMESTAMP` is a `clock_gettime` vDSO call — lock-free with
+`clocksource=tsc`/`kvm-clock`. On a VM stuck with `hpet`/`acpi_pm` clock reads are
+slow and serialised system-wide; Oracle's own wait-event timing suffers from that
+long before this package does, but it is the one scenario where `coarse_clock` also
+helps concurrency.
+
 ## What about 23ai / 26ai?
 
 Newer releases have a native `UUID()` SQL function (plus `RAW_TO_UUID` /
 `UUID_TO_RAW`), but as of 23.26.3 it only produces **version 4**: `UUID(7)` raises
 `ORA-62433`. Random v4 keys scatter inserts across the whole primary key index, so
-this package remains the better key source there too. It installs and passes its
-tests unchanged on 23.26.
+this package remains the better key source there too.
+
+Tested on 19c EE 19.26 (x86-64) and 23.26 Free (ARM); same source, all tests pass.
 
 ## Why not Java
 
