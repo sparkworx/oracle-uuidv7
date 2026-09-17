@@ -293,3 +293,7 @@ burden without a way to win.
   DML yields unique keys that are ordered per PX server.
 * If the OS clock is stepped backwards, a running session keeps issuing ascending
   keys from its last timestamp until the clock catches up.
+
+## License
+
+[MIT](LICENSE) © 2026 Ian Woodbury
