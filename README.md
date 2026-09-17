@@ -83,11 +83,11 @@ Base85 variant with a custom, delimiter-free alphabet). An interface that accept
 UUIDs today is already past a 20-character limit by agreement — fine, but worth
 having in the interface specification rather than in folklore.
 
-For reference, the standard's own words. `MSH-10`: *"This field contains a number or
+For reference, the standard's own words (current v2 text, as published by HL7 Europe). `MSH-10`: *"This field contains a number or
 other identifier that uniquely identifies the message. The receiving system echoes
 this ID back to the sending system in the Message acknowledgment segment (MSA)."*
-`MSH-13` Sequence Number (optional, `NM`): *"A non-null value in this field implies
-that the sequence number protocol is in use. This numeric field is incremented by one
+`MSH-13` Sequence Number (optional, `NM`): *"A non-delete indicator value in this field
+implies that the sequence number protocol is in use. This numeric field is incremented by one
 for each subsequent value."* Uniqueness lives in one field, ordering in another.
 
 What UUIDv7 deliberately does **not** claim: a global total order across sessions.
