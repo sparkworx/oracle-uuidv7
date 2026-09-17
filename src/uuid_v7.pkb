@@ -1,4 +1,6 @@
 CREATE OR REPLACE PACKAGE BODY uuid_v7 AS
+  -- SPDX-License-Identifier: MIT
+  -- Copyright (c) 2026 Ian Woodbury
   /*
    * Performance notes (measured, see README): UTL_RAW calls cost 0.3-0.5us each
    * while native HEXTORAW / SUBSTRB / || cost a few hundredths, so the value is

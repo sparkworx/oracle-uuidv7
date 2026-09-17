@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: MIT
+-- Copyright (c) 2026 Ian Woodbury
 -- Benchmark: UUID_V7.GENERATE vs sequence.NEXTVAL vs SYS_GUID() as a key source.
 --
 --   sqlplus user/pass@db @bench/bench.sql

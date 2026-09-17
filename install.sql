@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: MIT
+-- Copyright (c) 2026 Ian Woodbury
 -- Installs the UUID_V7 package into the current schema.
 --
 --   sqlplus user/pass@db @install.sql [no_crypto] [coarse_clock]

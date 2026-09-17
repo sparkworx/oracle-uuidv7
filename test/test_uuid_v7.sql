@@ -1,3 +1,5 @@
+-- SPDX-License-Identifier: MIT
+-- Copyright (c) 2026 Ian Woodbury
 -- Self-checking tests for UUID_V7. Exits non-zero on the first failure.
 --
 --   sqlplus user/pass@db @test/test_uuid_v7.sql

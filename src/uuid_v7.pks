@@ -1,4 +1,6 @@
 CREATE OR REPLACE PACKAGE uuid_v7 AUTHID DEFINER AS
+  -- SPDX-License-Identifier: MIT
+  -- Copyright (c) 2026 Ian Woodbury
   /*
    * RFC 9562 version 7 UUIDs as RAW(16), for Oracle Database 12.2+ (built for 19c).
    *
