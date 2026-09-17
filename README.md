@@ -32,8 +32,8 @@ is enforcing something that neither HL7 nor Oracle guarantees:
 |---|---|
 | Values arrive in increasing order | `NEXTVAL` order is not send order. Two sessions draw 1041 and 1042; 1042 finishes building its message first. Any sender with more than one session violates this, on any database. |
 | Increasing across the cluster | On RAC each instance caches its own range (`NOORDER`, the default): node 1 hands out 1–20 while node 2 hands out 21–40, interleaved in time. |
-| ...so use `ORDER`? | `ORDER` makes every `NEXTVAL` a cluster-wide synchronisation (`enq: SV`, `row cache lock`, `seq$` block pings). You pay global serialisation on every message to prop up a guarantee the first row already lost. |
-| No gaps | Rollbacks, instance crashes, shared pool ageing and cache flushes all burn values. Gapless sequences do not exist. |
+| ...so use `ORDER`? | `ORDER` makes every `NEXTVAL` a cluster-wide synchronization (`enq: SV`, `row cache lock`, `seq$` block pings). You pay global serialization on every message to prop up a guarantee the first row already lost. |
+| No gaps | Rollbacks, instance crashes, shared pool aging and cache flushes all burn values. Gapless sequences do not exist. |
 | Never reissued | A point-in-time restore, a flashback, a refreshed clone or a recreated sequence hands out numbers the partner has already seen — silently. |
 | Unique per sender | `48213` from PROD, from TEST, from the DR site and from the facility you merge with next year are the same control ID. |
 
@@ -62,7 +62,7 @@ UUIDv7 replaces those assumptions with properties that actually hold:
   index, cache-friendly, and recent messages (the ones ACK matching looks up) sit
   together in a few hot blocks.
 * **Cheaper than the sequence it replaces.** No `seq$` updates, no `enq: SQ` /
-  `enq: SV`, no `row cache lock`, nothing global on RAC (see *Behaviour under high
+  `enq: SV`, no `row cache lock`, nothing global on RAC (see *Behavior under high
   concurrency*), and 2x faster than `NEXTVAL` when called from PL/SQL.
 
 ```sql
@@ -91,7 +91,7 @@ implies that the sequence number protocol is in use. This numeric field is incre
 for each subsequent value."* Uniqueness lives in one field, ordering in another.
 
 What UUIDv7 deliberately does **not** claim: a global total order across sessions.
-Nothing does, short of funnelling every message through a single serialisation
+Nothing does, short of funneling every message through a single serialization
 point; a sequence only appears to, until the second session or the second RAC node.
 If a partner genuinely needs ordered processing, that is a transport-level concern
 (one connection, `MSH-13`, or an ordered queue), not something to smuggle into an
@@ -217,7 +217,7 @@ Reading the table:
 Also verified: 8 concurrent sessions × 100,000 inserts into one primary-keyed table —
 800,000 distinct keys, no `ORA-00001`, every session's keys in generation order.
 
-## Behaviour under high concurrency
+## Behavior under high concurrency
 
 `generate` touches **no shared structure** per call: no SQL, no sequence, no latch,
 no enqueue, no row cache. All state (last timestamp, random pool, ~8 KB) lives in the
@@ -225,7 +225,7 @@ session's own memory. The default and `coarse_clock` builds are identical in thi
 respect — the clock choice is a pure CPU trade-off (~1 µs per UUID) and cannot create
 or remove contention.
 
-Library cache behaviour, measured via `v$librarycache` pin deltas:
+Library cache behavior, measured via `v$librarycache` pin deltas:
 
 | calling pattern | package pins |
 |---|---|
@@ -249,13 +249,13 @@ updates, `row cache lock` or `enq: SQ/SV` waits, and nothing to coordinate in RA
 The one real library cache hazard is **DDL against the package while it is busy**.
 `CREATE OR REPLACE`/`ALTER ... COMPILE` needs an exclusive pin: it waits for every
 in-flight top-level call using the package (`library cache pin`), new callers queue
-behind it, and afterwards every session holding package state takes one `ORA-04068`.
+behind it, and afterward every session holding package state takes one `ORA-04068`.
 Deploy in a quiet window (or via edition-based redefinition) and never recompile it
 casually under load.
 
 Host-level: `SYSTIMESTAMP` is a `clock_gettime` vDSO call — lock-free with
 `clocksource=tsc`/`kvm-clock`. On a VM stuck with `hpet`/`acpi_pm` clock reads are
-slow and serialised system-wide; Oracle's own wait-event timing suffers from that
+slow and serialized system-wide; Oracle's own wait-event timing suffers from that
 long before this package does, but it is the one scenario where `coarse_clock` also
 helps concurrency.
 
@@ -271,7 +271,7 @@ Tested on 19c EE 19.26 (x86-64) and 23.26 Free (ARM); same source, all tests pas
 ## Why not Java
 
 Not benchmarked, deliberately. An OJVM stored procedure adds a call boundary on
-every invocation and JVM initialisation in every new session, needs the JAVAVM
+every invocation and JVM initialization in every new session, needs the JAVAVM
 component installed and patched, and still could not be used in a column `DEFAULT`.
 The remaining cost here is `SYSTIMESTAMP` plus a few C built-ins; there is no
 computation left for a JIT to speed up, so Java adds overhead and operational
