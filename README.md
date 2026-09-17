@@ -74,11 +74,21 @@ l_msh10 := uuid_v7.to_string(l_id);          -- '01a0b0f8-bbc9-73b2-a37b-eae4a6c
 SELECT ... FROM hl7_outbound WHERE id = uuid_v7.from_string(:msa_2);
 ```
 
-One thing to check with each trading partner: `MSH-10` is `ST` with a maximum length
-of **20** up to HL7 v2.6 and 199 from v2.7. A UUID is 36 characters (32 without
-hyphens), so an interface that accepts UUIDs today is already past the v2.6 limit by
-agreement — fine, but worth having in the interface specification rather than in
-folklore.
+One thing to check with each trading partner: the length of `MSH-10`. Older versions
+of the standard give it a maximum length of **20** (v2.2 attribute table: `ST`, 20,
+required); current versions specify `[1..199]`, no truncation — the change came with
+the min..max length notation around v2.7 (verify for the version your interface
+claims). A UUID is 36 characters (32 without hyphens; 22 in Base64; 20 only in a
+Base85 variant with a custom, delimiter-free alphabet). An interface that accepts
+UUIDs today is already past a 20-character limit by agreement — fine, but worth
+having in the interface specification rather than in folklore.
+
+For reference, the standard's own words. `MSH-10`: *"This field contains a number or
+other identifier that uniquely identifies the message. The receiving system echoes
+this ID back to the sending system in the Message acknowledgment segment (MSA)."*
+`MSH-13` Sequence Number (optional, `NM`): *"A non-null value in this field implies
+that the sequence number protocol is in use. This numeric field is incremented by one
+for each subsequent value."* Uniqueness lives in one field, ordering in another.
 
 What UUIDv7 deliberately does **not** claim: a global total order across sessions.
 Nothing does, short of funnelling every message through a single serialisation
