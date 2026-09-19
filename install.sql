@@ -24,13 +24,15 @@ SET TERMOUT OFF
 SELECT NULL AS "1", NULL AS "2" FROM dual WHERE 1 = 0;
 SET TERMOUT ON
 
-COLUMN ccflags NEW_VALUE ccflags NOPRINT
-SELECT 'uuid_v7_no_crypto:'
-       || CASE WHEN INSTR(LOWER(' &1 &2 '), ' no_crypto ') > 0 THEN 'true' ELSE 'false' END
-       || ',uuid_v7_coarse_clock:'
-       || CASE WHEN INSTR(LOWER(' &1 &2 '), ' coarse_clock ') > 0 THEN 'true' ELSE 'false' END
-       AS ccflags
+-- Also substituted into the "Compiled with" comment of the spec and body.
+COLUMN uuid_v7_no_crypto    NEW_VALUE uuid_v7_no_crypto    NOPRINT
+COLUMN uuid_v7_coarse_clock NEW_VALUE uuid_v7_coarse_clock NOPRINT
+SELECT CASE WHEN INSTR(LOWER(' &1 &2 '), ' no_crypto ') > 0 THEN 'true' ELSE 'false' END
+         AS uuid_v7_no_crypto,
+       CASE WHEN INSTR(LOWER(' &1 &2 '), ' coarse_clock ') > 0 THEN 'true' ELSE 'false' END
+         AS uuid_v7_coarse_clock
   FROM dual;
+DEFINE ccflags = 'uuid_v7_no_crypto:&uuid_v7_no_crypto,uuid_v7_coarse_clock:&uuid_v7_coarse_clock'
 
 ALTER SESSION SET plsql_code_type = NATIVE;
 ALTER SESSION SET plsql_optimize_level = 3;

@@ -26,6 +26,12 @@ CREATE OR REPLACE PACKAGE uuid_v7 AUTHID DEFINER AS
    * chronological.
    */
 
+  /*
+   * Compiled with PLSQL_CCFLAGS (filled in by install.sql):
+   *   uuid_v7_no_crypto    = &uuid_v7_no_crypto
+   *   uuid_v7_coarse_clock = &uuid_v7_coarse_clock
+   */
+
   -- Next UUIDv7. Never NULL, always 16 bytes.
   FUNCTION generate RETURN RAW PARALLEL_ENABLE;
 

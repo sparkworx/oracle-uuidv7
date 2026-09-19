@@ -9,6 +9,12 @@ CREATE OR REPLACE PACKAGE BODY uuid_v7 AS
    * scan the string from the start to find a character offset.
    */
 
+  /*
+   * Compiled with PLSQL_CCFLAGS (filled in by install.sql):
+   *   uuid_v7_no_crypto    = &uuid_v7_no_crypto
+   *   uuid_v7_coarse_clock = &uuid_v7_coarse_clock
+   */
+
   c_epoch     CONSTANT TIMESTAMP    := TIMESTAMP '1970-01-01 00:00:00';
   c_hex       CONSTANT VARCHAR2(16) := '0123456789ABCDEF';
   c_pool_len  CONSTANT PLS_INTEGER  := 4000;   -- hex chars: 2000 random bytes = 250 UUIDs
