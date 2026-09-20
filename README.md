@@ -325,14 +325,66 @@ Speed aside:
   (13 distinct timestamps across 100,000 UUIDs generated over 1.3 s), so the
   embedded time is coarser than the format suggests.
 
-## Why not Java
+### Generating on the client instead
 
-Not benchmarked, deliberately. An OJVM stored procedure adds a call boundary on
-every invocation and JVM initialization in every new session, needs the JAVAVM
-component installed and patched, and still could not be used in a column `DEFAULT`.
-The remaining cost here is `SYSTIMESTAMP` plus a few C built-ins; there is no
-computation left for a JIT to speed up, so Java adds overhead and operational
-burden without a way to win.
+Robson Kades's [`uuidv7`](https://github.com/robsonkades/uuidv7) for Java 17+ (MIT,
+`io.github.robsonkades:uuidv7`) is the other interesting contrast, and in raw
+generation speed it is in a different league from anything in this README. Its
+published JMH figures (i7-13700K, JDK 25): **260 million UUIDs per second** on one
+thread — 3.84 ns each — 118 M/s in its `SecureRandom`-per-UUID mode, over a
+billion per second across 8 threads, against 74.5 M/s for the well-known
+java-uuid-generator. `uuid_v7.generate` takes 2.6 µs. That is roughly 700 times
+slower, and no amount of PL/SQL tuning will change the order of magnitude: a
+JIT-compiled loop over thread-local state is simply a faster place to run than a
+PL/SQL virtual machine.
+
+Those numbers cannot be compared with ours, though, because none of them survive
+contact with an `INSERT`. With keys already in hand, a row costs this database
+about 1 µs in an array insert and 11–12 µs row by row (see *Benchmarks*), and a
+client pays a network round trip on top. One session tops out around a million
+rows per second in the best case — 1/250th of what the generator can supply. The
+database is the bottleneck either way; past a few microseconds per key, generator
+speed stops being a reason to choose anything.
+
+So choose on architecture. Candidly:
+
+* **If a Java application owns every insert into the table, generate on the
+  client, with that library.** It is the better design, and not because of the
+  260 M/s. The ID exists before the row does: no `RETURNING` clause, parent and
+  child rows batched in one round trip, the same ID usable in the log line, the
+  message and the other datastore. And the key costs the database nothing, which
+  does matter for bulk loads — in the array-insert path our 2.6 µs of generation
+  is most of the server-side cost per row. Bind it as 16 big-endian bytes into a
+  `RAW(16)` column (most significant long first; never `VARCHAR2(36)`, which
+  doubles the key and the index). `uuid_v7.to_string`, `from_string` and
+  `timestamp_of` work on any RFC 9562 v7 value, so this package stays useful as
+  the database-side decoder.
+* **Know what changes.** The embedded time becomes the application hosts' clocks
+  rather than the database's: many clocks instead of one, so `timestamp_of` is as
+  trustworthy as your app tier's NTP. Monotonicity is per thread there as it is
+  per session here; across threads and hosts both order by wall clock, to the
+  millisecond.
+* **Generate in the database when the database is where rows are born:** PL/SQL
+  APIs and interface engines (the HL7 case above), `INSERT ... SELECT`, `MERGE`,
+  ETL, triggers under applications you cannot change, or several client stacks
+  of which not all have a v7 library worth trusting. One implementation, one
+  clock, one guarantee, whoever the caller is — that is what this package is for.
+* **Mixing is fine.** Client-generated and database-generated v7 values share a
+  column happily: same layout, same index behavior, no collision risk worth
+  discussing. Only the strict in-order guarantee is scoped to one generator.
+* **Not on Oracle at all?** Then none of this applies. PostgreSQL 18 has a native
+  `uuidv7()` and a real `uuid` type — use them. Elsewhere, use your language's v7
+  library, and in Java that one is a good pick.
+
+## Why not a Java stored procedure
+
+Not benchmarked, deliberately — this is about Java *inside* the database; for Java
+on the client see *Generating on the client instead*. An OJVM stored procedure adds
+a call boundary on every invocation and JVM initialization in every new session,
+needs the JAVAVM component installed and patched, and still could not be used in a
+column `DEFAULT`. The remaining cost here is `SYSTIMESTAMP` plus a few C built-ins;
+there is no computation left for a JIT to speed up, so Java adds overhead and
+operational burden without a way to win.
 
 ## Usage notes
 
