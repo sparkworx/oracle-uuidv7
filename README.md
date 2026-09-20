@@ -267,6 +267,63 @@ Newer releases have a native `UUID()` SQL function (plus `RAW_TO_UUID` /
 this package remains the better key source there too.
 
 Tested on 19c EE 19.26 (x86-64) and 23.26 Free (ARM); same source, all tests pass.
+The package is pure PL/SQL and uses nothing newer than 11g: it also installs and
+passes the structure, ordering and uniqueness tests on 11.2.0.2 XE (the test
+script's minute-rollover step needs `DBMS_SESSION.SLEEP`, 18c+).
+
+## Prior art
+
+Øyvind Isene's [UUID v7 in Oracle Database](https://enesi.no/2025/12/uuid-v7-in-oracle-database/)
+(December 2025) loads the npm [`uuidv7`](https://www.npmjs.com/package/uuidv7)
+library into the database as an MLE JavaScript module — a few lines of glue and a
+well-tested library is callable from SQL. Honorable mention: it is a neat
+demonstration of what MLE is for, the post is candid about the cost, and its
+benchmark is published clearly enough to reproduce, which is what made this
+comparison possible. He times it against the native `UUID()` (v4) and against the
+PL/SQL function `generate_uuid_v7` from Jasmin Fluri's
+[How UUIDv7 makes your (database) life easier](https://medium.com/@jasminfluri/how-uuidv7-makes-your-database-life-easier-5eee3d0ff9e2).
+
+`bench/prior_art.sql` reruns his test next to this package: both functions built
+and loaded exactly as published (`uuidv7` 1.2.1, esbuild bundle, SQLcl
+`mle create-module`), same statement, Oracle 23.26.3 Free in Docker on Apple
+silicon. Seconds for `CREATE TABLE ... AS SELECT <generator>,
+dbms_random.string('a',42) ... CONNECT BY LEVEL <= 1e6`, average of 3 runs (6 for
+the first three rows — they ran alongside both builds of this package):
+
+| one million rows, seconds | as published (enesi.no, M1 Mac mini) | reproduced here | UUID column only |
+|---|---|---|---|
+| native `UUID()` — v4, random | 21.5 | 19.2 | 1.0 |
+| `generate_uuid_v7()` — PL/SQL, Medium article | 30.3 | 28.4 | 9.5 |
+| `uuid_v7_raw()` — MLE JavaScript | 38.2 | 34.4 | 13.3 |
+| **`uuid_v7.generate`** | – | **23.8** | **4.4** |
+| **`uuid_v7.generate`**, `coarse_clock` | – | **20.5** | **2.8** |
+
+His numbers reproduce to within about 10%. Some 18 of those seconds are the
+`DBMS_RANDOM.STRING` filler column, identical for every row of the table, so the
+last column repeats the statement without it. Per UUID, on top of the kernel's own
+v4: JavaScript 12.3 µs, the PL/SQL function 8.5 µs, this package 3.4 µs — 1.8 µs
+with `coarse_clock`. That is 3x faster than the MLE call and 2.2x faster than the
+other PL/SQL implementation (4.8x and 3.4x with `coarse_clock`), and it closes most
+of the gap to a native function that does not have to read the clock at all.
+
+Speed aside:
+
+* **Pure PL/SQL, back to 11g.** MLE JavaScript needs 21c or later (and, in 21c,
+  was limited to `DBMS_MLE` dynamic execution; modules and call specifications
+  arrived with 23ai). This package is one spec and one body with no dependencies
+  beyond `DBMS_CRYPTO`, and the same source runs from 11.2 to 26ai — including the
+  19c estates that will be in production for years yet.
+* **`generate_uuid_v7` as published is not usable as a key.** It concatenates 4 + 2
+  + 2 + 2 + 4 bytes, so it returns **14-byte** values rather than 16; it takes the
+  time via `CAST(... AS DATE)`, so the "millisecond" timestamp only moves once per
+  second; and with nothing but `DBMS_RANDOM` bits after it, half of all consecutive
+  values sort out of order (50,116 of 100,000 in our check). It costs what it does
+  because it rebuilds everything per call, through `UTL_RAW.CONCAT` and a chain of
+  `TO_CHAR`/`LPAD`/`HEXTORAW` conversions — see *Why it is fast* for the alternative.
+* The `uuidv7` library is correct and monotonic (42-bit counter, RFC 9562 method
+  1). Inside MLE, though, its clock advanced only ~10 times per second in our run
+  (13 distinct timestamps across 100,000 UUIDs generated over 1.3 s), so the
+  embedded time is coarser than the format suggests.
 
 ## Why not Java
 
